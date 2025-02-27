@@ -1,0 +1,26 @@
+{% extends "Postlogin/navbar.html" %}  
+{% block title %} Login {% endblock %}
+{% block content%}
+
+
+<h1>Configuración de MFA</h1>
+
+    <div> 
+        <img src="{{ qrcode }}" alt="{{ img_path }}">
+        <form method="POST" action="{% url 'verify_mfa' %}" class="form text-center">
+            {% csrf_token %}
+            <div class="form-group text-">
+                <div class="mx-auto" style="width: 30%;">
+                    <input type="text" id="otp_code" name="otp_code" maxlength="6" required 
+                        class="form-control" placeholder="Enter your OTP code">
+                </div>
+            </div>
+            <input type="hidden" name="user_id" value="{{ request.user.id }}">
+            <button class="btn btn-primary" type="submit">Verify</button>
+        </form>
+    
+    </div>
+
+
+
+{% endblock %}
