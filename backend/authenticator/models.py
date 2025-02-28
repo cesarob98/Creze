@@ -35,10 +35,11 @@ class LoginAttempt(models.Model):
 class User(models.Model):
     user_id = models.AutoField(primary_key=True)
     user_name = models.CharField(max_length=255)
+    mfa_enabled = models.BooleanField(default=True)
     password = models.CharField(max_length=255, default='1')
 
     def __str__(self):
-        return f"{self.user_id} -- {self.user_name}"
+        return f"{self.user_id}:{self.user_name} mfa_enabled => {self.mfa_enabled}"
 
 
     

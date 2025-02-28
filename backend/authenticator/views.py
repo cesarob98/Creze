@@ -1,4 +1,7 @@
 import io
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
 from django.shortcuts import render, redirect
 from django.db import connection
 from django.contrib import messages
@@ -7,8 +10,11 @@ from django.http import HttpResponseRedirect
 from django.urls import reverse
 from .models import LoginAttempt, User, customUser
 from django.views.decorators.http import require_http_methods
+from django.utils.decorators import method_decorator
+from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse
 from django.utils.timezone import timedelta
-import pytz
+import pytz, json
 import qrcode
 from datetime import datetime
 from django.db.models import F
@@ -72,8 +78,37 @@ def mainMenu(request):
     if 'otp_token' not in request.session or request.session.get('otp_token') is False:
         messages.warning(request, 'Se requiere completar el token para continuar')
         return HttpResponseRedirect(reverse('mfa_setup'))
-    return render(request, 'Postlogin/MainMenu.html')
+    user_id = request.session['user_id']
+    user, created = User.objects.get_or_create(user_id=user_id)
+    print(f"welcome user: {user}")
+    return render(request, 'Postlogin/MainMenu.html', {"user_name": user.user_name, "mfa_enabled": user.mfa_enabled})
 
+
+@require_http_methods(['POST'])
+def update_mfa_enabled(request):
+    try:
+        if request.method == 'POST':
+            data = json.loads(request.body)
+            mfa_enabled = data.get('mfa_enabled')
+            uid = request.session.get('user_id')
+            if uid is None:
+                return JsonResponse({'error': 'User ID not found in session'}, status=400)
+            user = User.objects.filter(user_id=uid).first()
+            if not user:
+                return JsonResponse({'error': 'User not found'}, status=404)
+            
+            with connection.cursor() as cursor:
+                cursor.callproc('main.update_mfa_setup', [uid, mfa_enabled])
+                result = cursor.fetchone()
+                if result:
+                    user.mfa_enabled = mfa_enabled
+                    user.save()
+                    return JsonResponse({'success': True})
+        else:
+            return JsonResponse({'error': 'Invalid request method'}, status=400)
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        return JsonResponse({'error': str(e)}, status=400)
 
 
 def verify_mfa(request):
@@ -130,16 +165,24 @@ def login(request):
             if result:
                 user_id = result[0]
                 user_name = result[1]
+                mfa_enabled = result[2]
                 attempt.attempts = 0
                 attempt.blocked_until = None
                 attempt.save()
-                user = User.objects.get(user_id = user_id)
+                user, ucreated = User.objects.get_or_create(user_id = user_id)
+                print(f"\n\n\n\n\n{user}")
                 user.user_name=user_name
+                user.mfa_enabled=mfa_enabled
+                user.save()
                 request.session['user_id'] = user.user_id
                 request.session['logged_in'] = True
                 request.session['otp_token'] = False
                 messages.success(request, 'Login exitoso!')
-                return redirect('mfa_setup')
+                if mfa_enabled:
+                    return redirect('mfa_setup')
+                else:
+                    request.session['otp_token'] = True
+                    return redirect('mainMenu')
             else:
 
                 now = datetime.now(tz) 
@@ -151,4 +194,162 @@ def login(request):
 
     else:
         return redirect('home')
+
+class LoginView(APIView):
+    def post(self, request):
+        user_name = request.data.get('user_name')
+        password = request.data.get('password')
+
+        attempt, created = LoginAttempt.objects.get_or_create(username=user_name)
+        attempt.attempts += 1
+        attempt.save()
+
+        if attempt.is_blocked():
+            return Response({'success': False, 'message': f'Bloqueado hasta: {attempt.blocked_until}'}, status=403)
+
+        with connection.cursor() as cursor:
+            cursor.callproc('main.login', [user_name, password])
+            result = cursor.fetchone()
+
+            if result:
+                user_id, user_name, mfa_enabled = result
+                attempt.attempts = 0
+                attempt.blocked_until = None
+                attempt.save()
+
+                user, _ = User.objects.get_or_create(user_id=user_id)
+                user.user_name = user_name
+                user.mfa_enabled = mfa_enabled
+                user.save()
+
+                
+                request.session['user_id'] = user_id
+                request.session['logged_in'] = True
+                request.session['otp_token'] = False  
+                
+                
+                request.session.set_expiry(3600)  
+                if mfa_enabled:
+                    user_id = request.session.get('user_id')
+                    if not user_id:
+                        return Response({'message': 'Usuario no autenticado'}, status=403)
+
+                    user, created = customUser.objects.get_or_create(user_id=user_id)
+                    if not user.mfa_secret:
+                        user.mfa_secret = pyotp.random_base32()
+                        user.save()
+
+                    otp_uri = pyotp.totp.TOTP(user.mfa_secret).provisioning_uri(
+                        name=user.email, issuer_name="CESAR"
+                    )
+
+                    qr = qrcode.make(otp_uri)
+                    buffer = io.BytesIO()
+                    qr.save(buffer, format="PNG")
+                    buffer.seek(0)
+                    qr_code = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+                    user.login_validity = datetime.now()
+                    user.save()
+                    return Response({
+                        "success": True, 
+                        "user_id": user_id,
+                        "redirect": "mfa_setup" ,
+                        "qrcode": f"data:image/png;base64,{qr_code}"}, status=200)
+                return Response({
+                    'success': True,
+                    "user_id": user_id,
+                    'redirect': 'mfa_setup' if mfa_enabled else 'mainMenu',
+                    'message': 'Login exitoso!'
+                })
+            else:
+                if attempt.attempts >= 5:
+                    attempt.blocked_until = datetime.now() + timedelta(minutes=5)
+                attempt.save()
+
+                return Response({'success': False, 'message': 'Login fallido!'}, status=400)
+
+class MFASetupView(APIView):
+    def get(self, request):
+        user_id = request.session.get('user_id')
+        if not user_id:
+            return Response({'message': 'Usuario no autenticado'}, status=403)
+
+        user, created = customUser.objects.get_or_create(user_id=user_id)
+        if not user.mfa_secret:
+            user.mfa_secret = pyotp.random_base32()
+            user.save()
+
+        otp_uri = pyotp.totp.TOTP(user.mfa_secret).provisioning_uri(
+            name=user.email, issuer_name="CESAR"
+        )
+
+        qr = qrcode.make(otp_uri)
+        buffer = io.BytesIO()
+        qr.save(buffer, format="PNG")
+        buffer.seek(0)
+        qr_code = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        user.login_validity = datetime.now()
+        user.save()
+        print(f"ready to return data:image/png;base64,{qr_code}")
+        return Response({"qrcode": f"data:image/png;base64,{qr_code}"}, status=200)
     
+class VerifyMFAView(APIView):
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        otp_code = request.data.get('otp_code')
+        print(user_id, otp_code)
+        if not user_id:
+            return Response({'message': 'User ID is missing'}, status=400)
+        if not otp_code:
+            return Response({'message': 'OTP code is missing'}, status=400)
+
+        try:
+            user = customUser.objects.get(user_id=user_id)
+        except customUser.DoesNotExist:
+            return Response({'message': 'User not found'}, status=404)
+
+        totp = pyotp.TOTP(user.mfa_secret) 
+        if totp.verify(otp_code):
+            request.session['otp_token'] = True 
+            return Response({'success': True, 'redirect': 'mainMenu'})
+        else:
+            return Response({'success': False, 'message': 'Invalid OTP'}, status=400)
+    
+def get_mfa_status(request):
+    uid = request.session.get('user_id') or request.GET.get('user_id')  # Fallback to query param
+    print(f"Checking user_id: {uid}")
+
+    if not uid:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    user = User.objects.filter(user_id=uid).first()
+    if not user:
+        return JsonResponse({"error": "User not found"}, status=404)
+
+    return JsonResponse({"mfa_enabled": user.mfa_enabled})
+
+
+class UpdateMFAView(APIView):
+    def post(self, request):
+        try:
+            uid = request.data.get('user_id')
+            mfa_enabled = request.data.get('mfa_enabled')
+            if uid is None:
+                return JsonResponse({'error': 'User ID not found in session'}, status=400)
+            else:
+                user = User.objects.filter(user_id=uid).first()
+                if not user:
+                    return JsonResponse({'error': 'User not found'}, status=404)
+                
+                with connection.cursor() as cursor:
+                    cursor.callproc('main.update_mfa_setup', [uid, mfa_enabled])
+                    result = cursor.fetchone()
+                    if result:
+                        user.mfa_enabled = mfa_enabled
+                        user.save()
+                        return JsonResponse({'success': True})
+        except Exception as e:
+            print(f"Error occurred: {e}")
+            return JsonResponse({'error': str(e)}, status=400)
