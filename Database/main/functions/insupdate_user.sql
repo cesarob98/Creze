@@ -5,25 +5,43 @@
 CREATE OR REPLACE FUNCTION main.insupdate_user(
 	p_user_name character varying,
 	p_password character varying)
-    RETURNS boolean
+    RETURNS TABLE(user_name character varying, password character varying, mfa_enabled boolean) 
     LANGUAGE 'plpgsql'
     COST 100
     VOLATILE PARALLEL UNSAFE
+    ROWS 1000
+
 AS $BODY$
 DECLARE
-	v_cyphered_password CHARACTER VARYING;
+    v_cyphered_password CHARACTER VARYING;
 BEGIN
-	BEGIN
-		SELECT cypher_password INTO v_cyphered_password FROM main.cypher_password(p_password);
-		INSERT INTO main.user (user_name, password) VALUES (p_user_name, v_cyphered_password);
-		RETURN TRUE;
-	EXCEPTION
-		WHEN unique_violation THEN
-			RETURN FALSE;
-		WHEN OTHERS THEN
-			RAISE NOTICE 'Error: %', SQLERRM;
-			RETURN FALSE;
-	END;
+    BEGIN
+        -- Encrypt the password
+        SELECT cypher_password INTO v_cyphered_password FROM main.cypher_password(p_password);
+        
+        -- Try to insert the user, update if exists
+        INSERT INTO main.user (user_name, password)
+        VALUES (p_user_name, v_cyphered_password)
+        ON CONFLICT(user_name) 
+        DO UPDATE 
+        SET password = EXCLUDED.password
+        RETURNING user_name, password, mfa_enabled INTO user_name, password, mfa_enabled;
+
+        -- Return the inserted or updated row
+        RETURN NEXT;
+        
+    EXCEPTION
+        WHEN unique_violation THEN
+            -- If a unique violation occurs, return the existing row
+            RETURN QUERY
+                SELECT user_name, password, mfa_enabled
+                FROM main.user
+                WHERE user_name = p_user_name;
+        WHEN OTHERS THEN
+            -- Handle other errors and raise a notice
+            RAISE NOTICE 'Error: %', SQLERRM;
+            RETURN NEXT;
+    END;
 END;
 $BODY$;
 

@@ -20,6 +20,7 @@ from datetime import datetime
 from django.db.models import F
 import pyotp
 import base64
+from django_ratelimit.decorators import ratelimit
 
 tz = pytz.timezone('America/Mexico_City')
 
@@ -254,11 +255,13 @@ class LoginView(APIView):
                     return Response({
                         "success": True, 
                         "user_id": user_id,
+                        "user_name": user_name,
                         "redirect": "mfa_setup" ,
                         "qrcode": f"data:image/png;base64,{qr_code}"}, status=200)
                 return Response({
                     'success': True,
                     "user_id": user_id,
+                    "user_name": user_name,
                     'redirect': 'mfa_setup' if mfa_enabled else 'mainMenu',
                     'message': 'Login exitoso!'
                 })
@@ -316,7 +319,7 @@ class VerifyMFAView(APIView):
             return Response({'success': True, 'redirect': 'mainMenu'})
         else:
             return Response({'success': False, 'message': 'Invalid OTP'}, status=400)
-    
+
 def get_mfa_status(request):
     uid = request.session.get('user_id') or request.GET.get('user_id')  # Fallback to query param
     print(f"Checking user_id: {uid}")
@@ -353,3 +356,36 @@ class UpdateMFAView(APIView):
         except Exception as e:
             print(f"Error occurred: {e}")
             return JsonResponse({'error': str(e)}, status=400)
+        
+class RegisterView(APIView):
+    @ratelimit(key='ip', rate='5/m', method='ALL')
+    def post(self, request):
+        user_name = request.data.get('user_name')
+        password = request.data.get('password')
+        print(f"REGISTERING {user_name}, {password}")
+        with connection.cursor() as cursor:
+            cursor.callproc('main.insupdate_user', [str(user_name), str(password)])
+            result = cursor.fetchone()
+
+            if result:
+                user_id, user_name, mfa_enabled = result
+
+                user, _ = User.objects.get_or_create(user_id=user_id)
+                user.user_name = user_name
+                user.mfa_enabled = mfa_enabled
+                user.save()
+
+                
+                request.session['user_id'] = user_id
+                request.session['logged_in'] = True
+                request.session['otp_token'] = False  
+                
+                return Response({
+                    'success': True,
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    'redirect': 'mainMenu',
+                    'message': 'Usuario agregado!'
+                })
+            else:
+                return Response({'success': False, 'message': 'Login fallido!'}, status=400)

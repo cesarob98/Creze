@@ -8,6 +8,7 @@ urlpatterns = [
     path("login", views.login, name ="login"),
 
     path("loginReact", views.LoginView.as_view(), name ="loginReact"),
+    path("registerReact", views.RegisterView.as_view(), name ="registerReact"),
     path("mfa_setupReact", views.MFASetupView.as_view(), name ="mfa_setupReact"),
     path('verify_mfaReact', views.VerifyMFAView.as_view(), name='verify_mfaReact'),
     path('update_mfa_enabledReact', views.UpdateMFAView.as_view(), name='update_mfa_enabledReact'),

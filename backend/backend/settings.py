@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'axes',
     'authenticator',
     'qr_code'
 ]
@@ -53,6 +54,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'axes.middleware.AxesMiddleware',
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -137,16 +139,12 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, 'reactapp/build/static')
-]
-
 
 CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:3000',  # React frontend origin
+    'http://localhost:3000',
 ]
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # React development server
+    "http://localhost:3000",
 ]
 
 CORS_ALLOW_METHODS = [
@@ -162,3 +160,5 @@ SESSION_COOKIE_NAME = 'sessionid'
 SESSION_COOKIE_AGE = 1209600 
 SESSION_SAVE_EVERY_REQUEST = True 
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = 1

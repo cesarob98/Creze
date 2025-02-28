@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS main."user"
     user_id integer NOT NULL DEFAULT nextval('main.user_user_id_seq'::regclass),
     user_name character varying(255) COLLATE pg_catalog."default" NOT NULL,
     password character varying(255) COLLATE pg_catalog."default" NOT NULL,
-    mfa_enabled boolean DEFAULT true,
+    mfa_enabled boolean DEFAULT false,
     CONSTRAINT user_pkey PRIMARY KEY (user_id),
     CONSTRAINT user_user_name_key UNIQUE (user_name)
 )
