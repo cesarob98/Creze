@@ -1,0 +1,15 @@
+Django
+django-axes
+django-qr-code
+django-cors-headers
+djangorestframework
+Pillow
+pytz
+qrcode
+pyotp
+django-ratelimit
+psycopg2
+qrcode
+django-rest-framework
+djangorestframework
+cors
