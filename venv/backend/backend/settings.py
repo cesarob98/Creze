@@ -92,7 +92,7 @@ DATABASES = {
         'HOST': 'localhost',
         'PORT': '5432',
         'OPTIONS': {
-            'options': '-c search_path=main'
+            'options': '-c search_path=main,public'
         },
     }
 }

@@ -5,16 +5,11 @@
 CREATE OR REPLACE FUNCTION main.cypher_password(
 	p_password text)
     RETURNS text
-    LANGUAGE 'plpgsql'
+    LANGUAGE 'sql'
     COST 100
     VOLATILE PARALLEL UNSAFE
 AS $BODY$
-DECLARE
-  v_cyphered_password text;
-BEGIN
-  v_cyphered_password := crypt(p_password, gen_salt('bf'));
-  RETURN v_cyphered_password;
-END;
+SELECT public.crypt(p_password, public.gen_salt('bf'));
 $BODY$;
 
 ALTER FUNCTION main.cypher_password(text)

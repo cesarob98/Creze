@@ -2,7 +2,7 @@ import io
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.shortcuts import render, redirect
-from django.db import connection
+from django.db import DatabaseError, connection
 from django.contrib import messages
 from django.contrib.auth import login
 from django.http import HttpResponseRedirect
@@ -195,18 +195,21 @@ def login(request):
 
     else:
         return redirect('home')
+    
 
+#Clase implementada para limitar el número de peticiones que se realizan
 class RateLimitedAPIView(APIView):
-    rate_limit = 5
+    rate_limit = 15
     rate_timeout = 60
+
     def dispatch(self, request, *args, **kwargs):
         if not self._is_allowed(request):
-            return JsonResponse({'message': 'Too many requests'}, status=429)
+            return JsonResponse({"message": "Too many requests"}, status=429)
         return super().dispatch(request, *args, **kwargs)
 
     def _is_allowed(self, request):
         """ Rate-limiting logic using cache. """
-        ip = request.META.get('REMOTE_ADDR')
+        ip = request.META.get("REMOTE_ADDR")
         key = f"rate_limit_{ip}"
         count = cache.get(key, 0)
 
@@ -215,81 +218,102 @@ class RateLimitedAPIView(APIView):
 
         cache.set(key, count + 1, timeout=self.rate_timeout)
         return True
+
+#Clase para manejar el login, hereda de RateLimitAPIView para manejar el número de intentos
+#Una vez superado el límite (15 por el momento) se restringe el acceso por 60 segundos
 class LoginView(RateLimitedAPIView):
     def post(self, request):
-        user_name = request.data.get('user_name')
-        password = request.data.get('password')
+        user_name = request.data.get("user_name")
+        password = request.data.get("password")
 
-        attempt, created = LoginAttempt.objects.get_or_create(username=user_name)
-        attempt.attempts += 1
-        attempt.save()
-
+        attempt, _ = LoginAttempt.objects.get_or_create(username=user_name)
+        
+        
         if attempt.is_blocked():
-            return Response({'success': False, 'message': f'Bloqueado hasta: {attempt.blocked_until}'}, status=403)
+            return Response({"success": False, "message": f"Bloqueado hasta: {attempt.blocked_until}"}, status=403)
 
-        with connection.cursor() as cursor:
-            cursor.callproc('main.login', [user_name, password])
-            result = cursor.fetchone()
+        
+        try:
+            with connection.cursor() as cursor:
+                cursor.callproc("main.login", [user_name, password])
+                result = cursor.fetchone()
 
-            if result:
-                user_id, user_name, mfa_enabled = result
-                attempt.attempts = 0
-                attempt.blocked_until = None
-                attempt.save()
+                if result:
+                    user_id, user_name, mfa_enabled = result
 
-                user, _ = User.objects.get_or_create(user_id=user_id)
-                user.user_name = user_name
-                user.mfa_enabled = mfa_enabled
-                user.save()
+                    
+                    attempt.attempts = 0
+                    attempt.blocked_until = None
+                    attempt.save()
 
-                
-                request.session['user_id'] = user_id
-                request.session['logged_in'] = True
-                request.session['otp_token'] = False  
-                
-                
-                request.session.set_expiry(3600)  
-                if mfa_enabled:
-                    user_id = request.session.get('user_id')
-                    if not user_id:
-                        return Response({'message': 'Usuario no autenticado'}, status=403)
+                    
+                    user, _ = User.objects.get_or_create(user_id=user_id)
+                    user.user_name = user_name
+                    user.mfa_enabled = mfa_enabled
+                    user.save()
 
-                    user, created = customUser.objects.get_or_create(user_id=user_id)
-                    if not user.mfa_secret:
-                        user.mfa_secret = pyotp.random_base32()
+                    
+                    request.session["user_id"] = user_id
+                    request.session["logged_in"] = True
+                    request.session["otp_token"] = False
+                    request.session.set_expiry(3600)  
+
+                    if mfa_enabled:
+                        
+                        user_id = request.session.get("user_id")
+                        if not user_id:
+                            return Response({"message": "Usuario no autenticado"}, status=403)
+
+                        
+                        user, created = customUser.objects.get_or_create(user_id=user_id)
+                        
+                        
+                        if not user.mfa_secret:
+                            user.mfa_secret = pyotp.random_base32()
+                            user.save()
+
+                        
+                        otp_uri = pyotp.totp.TOTP(user.mfa_secret).provisioning_uri(
+                            name=user.email, issuer_name="CESAR"
+                        )
+                        qr = qrcode.make(otp_uri)
+                        buffer = io.BytesIO()
+                        qr.save(buffer, format="PNG")
+                        buffer.seek(0)
+                        qr_code = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+                        
+                        user.login_validity = datetime.now()
                         user.save()
 
-                    otp_uri = pyotp.totp.TOTP(user.mfa_secret).provisioning_uri(
-                        name=user.email, issuer_name="CESAR"
-                    )
+                        return Response({
+                            "success": True,
+                            "user_id": user_id,
+                            "user_name": user_name,
+                            "redirect": "mfa_setup",
+                            "qrcode": f"data:image/png;base64,{qr_code}",
+                        }, status=200)
 
-                    qr = qrcode.make(otp_uri)
-                    buffer = io.BytesIO()
-                    qr.save(buffer, format="PNG")
-                    buffer.seek(0)
-                    qr_code = base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-                    user.login_validity = datetime.now()
-                    user.save()
                     return Response({
-                        "success": True, 
+                        "success": True,
                         "user_id": user_id,
                         "user_name": user_name,
-                        "redirect": "mfa_setup" ,
-                        "qrcode": f"data:image/png;base64,{qr_code}"}, status=200)
-                return Response({
-                    'success': True,
-                    "user_id": user_id,
-                    "user_name": user_name,
-                    'redirect': 'mfa_setup' if mfa_enabled else 'mainMenu',
-                    'message': 'Login exitoso!'
-                })
-            else:
-                if attempt.attempts >= 5:
-                    attempt.blocked_until = datetime.now() + timedelta(minutes=5)
-                attempt.save()
+                        "redirect": "mfa_setup" if mfa_enabled else "mainMenu",
+                        "message": "Login exitoso!",
+                    })
 
-                return Response({'success': False, 'message': 'Login fallido!'}, status=400)
+                else:
+                    
+                    attempt.attempts += 1
+                    if attempt.attempts >= 5:
+                        attempt.blocked_until = datetime.now() + timedelta(minutes=5)  
+                    attempt.save()
+
+                    return Response({"success": False, "message": "Login fallido!"}, status=400)
+        except DatabaseError as e:
+            # Handle database error
+            return Response({"success": False, "message": str(e)}, status=500)
+            
 
 class MFASetupView(RateLimitedAPIView):
     def get(self, request):
@@ -316,7 +340,7 @@ class MFASetupView(RateLimitedAPIView):
         user.save()
         print(f"ready to return data:image/png;base64,{qr_code}")
         return Response({"qrcode": f"data:image/png;base64,{qr_code}"}, status=200)
-    
+#Unused
 class VerifyMFAView(RateLimitedAPIView):
     def post(self, request):
         user_id = request.data.get('user_id')
@@ -339,6 +363,8 @@ class VerifyMFAView(RateLimitedAPIView):
         else:
             return Response({'success': False, 'message': 'Invalid OTP'}, status=400)
 
+
+#Clase para obtener el valor de la tabla mfa_enabled y ponerlo en un check
 def get_mfa_status(request):
     uid = request.session.get('user_id') or request.GET.get('user_id')  # Fallback to query param
     print(f"Checking user_id: {uid}")
@@ -352,7 +378,7 @@ def get_mfa_status(request):
 
     return JsonResponse({"mfa_enabled": user.mfa_enabled})
 
-
+#Clase para actualizar el valor de mfa_enabled dependiendo del usuario
 class UpdateMFAView(RateLimitedAPIView):
     def post(self, request):
         try:
@@ -376,8 +402,9 @@ class UpdateMFAView(RateLimitedAPIView):
             print(f"Error occurred: {e}")
             return JsonResponse({'error': str(e)}, status=400)
         
+
+#Clase para registarr un nuevo Usuario
 class RegisterView(RateLimitedAPIView):
-    @ratelimit(key='ip', rate='5/m', method='ALL')
     def post(self, request):
         user_name = request.data.get('user_name')
         password = request.data.get('password')
