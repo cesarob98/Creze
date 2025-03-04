@@ -197,8 +197,17 @@ def login(request):
         return redirect('home')
     
 
-#Clase implementada para limitar el número de peticiones que se realizan
 class RateLimitedAPIView(APIView):
+    """
+    Clase base para implementar límites de velocidad en las vistas de la API.
+
+    Atributos:
+        rate_limit (int): Número de solicitudes permitidas por minuto.
+        rate_timeout (int): Tiempo de espera antes de permitir nuevas solicitudes.
+
+    Métodos:
+        dispatch(request, *args, **kwargs): Procesa la solicitud y verifica si se ha superado el límite de velocidad.
+    """
     rate_limit = 15
     rate_timeout = 60
 
@@ -219,9 +228,14 @@ class RateLimitedAPIView(APIView):
         cache.set(key, count + 1, timeout=self.rate_timeout)
         return True
 
-#Clase para manejar el login, hereda de RateLimitAPIView para manejar el número de intentos
-#Una vez superado el límite (15 por el momento) se restringe el acceso por 60 segundos
+
 class LoginView(RateLimitedAPIView):
+    """
+    Vista para manejar el login de un usuario.
+
+    Métodos:
+        post(request): Procesa la solicitud de login y verifica las credenciales del usuario.
+    """
     def post(self, request):
         user_name = request.data.get("user_name")
         password = request.data.get("password")
@@ -316,6 +330,12 @@ class LoginView(RateLimitedAPIView):
             
 
 class MFASetupView(RateLimitedAPIView):
+    """
+    Vista para configurar la autenticación de dos factores (MFA) para un usuario.
+
+    Métodos:
+        get(request): Devuelve un código QR para que el usuario configure la autenticación de dos factores.
+    """
     def get(self, request):
         user_id = request.session.get('user_id')
         if not user_id:
@@ -364,9 +384,17 @@ class VerifyMFAView(RateLimitedAPIView):
             return Response({'success': False, 'message': 'Invalid OTP'}, status=400)
 
 
-#Clase para obtener el valor de la tabla mfa_enabled y ponerlo en un check
 def get_mfa_status(request):
-    uid = request.session.get('user_id') or request.GET.get('user_id')  # Fallback to query param
+    """
+    Función para obtener el estado de la autenticación de dos factores (MFA) para un usuario.
+
+    Parámetros:
+        request (HttpRequest): Solicitud HTTP.
+
+    Retorna:
+        dict: Un objeto JSON con el estado de la autenticación de dos factores (MFA) para el usuario.
+    """
+    uid = request.session.get('user_id') or request.GET.get('user_id') 
     print(f"Checking user_id: {uid}")
 
     if not uid:
@@ -378,8 +406,14 @@ def get_mfa_status(request):
 
     return JsonResponse({"mfa_enabled": user.mfa_enabled})
 
-#Clase para actualizar el valor de mfa_enabled dependiendo del usuario
+
 class UpdateMFAView(RateLimitedAPIView):
+    """
+    Vista para actualizar el estado de la autenticación de dos factores (MFA) para un usuario.
+
+    Métodos:
+        post(request): Actualiza el estado de la autenticación de dos factores (MFA) para el usuario.
+    """
     def post(self, request):
         try:
             uid = request.data.get('user_id')
@@ -403,8 +437,13 @@ class UpdateMFAView(RateLimitedAPIView):
             return JsonResponse({'error': str(e)}, status=400)
         
 
-#Clase para registarr un nuevo Usuario
 class RegisterView(RateLimitedAPIView):
+    """
+    Vista para registrar un nuevo usuario.
+
+    Métodos:
+        post(request): Procesa la solicitud de registro y crea un nuevo usuario.
+    """
     def post(self, request):
         user_name = request.data.get('user_name')
         password = request.data.get('password')
